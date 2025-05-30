@@ -1,0 +1,929 @@
+#app.py 
+
+import streamlit as st
+import numpy as np
+import cv2
+from PIL import Image
+import time
+from haze_removal import HazeRemoval
+from dehazer import image_dehazer
+
+# Initialize dehazers
+dehazer = image_dehazer(
+    airlightEstimation_windowSze=15, 
+    boundaryConstraint_windowSze=3, 
+    C0=20, 
+    C1=300,
+    regularize_lambda=0.1, 
+    sigma=0.5, 
+    delta=0.85, 
+    showHazeTransmissionMap=False
+)
+
+# App configuration with better contrast
+st.set_page_config(
+    page_title="✨ Advanced Haze Removal", 
+    layout="wide",
+    page_icon="🌈",
+    initial_sidebar_state="expanded"
+)
+
+# Custom CSS with improved readability
+st.markdown("""
+    <style>
+    /* Main background - lighter for better contrast */
+    .stApp {
+        background: #f8f9fa;
+    }
+    
+    /* Sidebar styling - darker for contrast */
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #3a4a8c 0%, #1a2244 100%) !important;
+    }
+    
+    /* Sidebar text color */
+    [data-testid="stSidebar"] * {
+        color: white !important;
+    }
+    
+    /* Vibrant buttons with dark text */
+    .stButton > button {
+        background: linear-gradient(45deg, #FF4E50 0%, #F9D423 100%) !important;
+        color: #222 !important;
+        font-weight: bold !important;
+        border: none !important;
+        border-radius: 8px !important;
+        padding: 12px 24px !important;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.1) !important;
+        transition: all 0.3s ease !important;
+    }
+    
+    .stButton > button:hover {
+        transform: translateY(-2px) !important;
+        box-shadow: 0 6px 12px rgba(0,0,0,0.15) !important;
+        color: #000 !important;
+    }
+    
+    /* Main content text color */
+    .main * {
+        color: #333 !important;
+    }
+    
+    /* Headers with better contrast */
+    h1, h2, h3, h4, h5, h6 {
+        color: #2c3e50 !important;
+    }
+    
+    /* Radio buttons */
+    [role=radiogroup] {
+        background: rgba(255,255,255,0.9) !important;
+        padding: 15px !important;
+        border-radius: 10px !important;
+    }
+    
+    /* Sliders */
+    .stSlider {
+        color: #FF4E50 !important;
+    }
+    
+    /* File uploader */
+    [data-testid="stFileUploader"] {
+        border: 2px dashed #4b6cb7 !important;
+        border-radius: 10px !important;
+        padding: 20px !important;
+        background: rgba(255,255,255,0.9) !important;
+    }
+    
+    /* Progress bar */
+    .stProgress > div > div > div {
+        background: linear-gradient(90deg, #FF4E50 0%, #F9D423 100%) !important;
+    }
+    
+    /* Cards */
+    .card {
+        background: rgba(255,255,255,0.95) !important;
+        border-radius: 10px !important;
+        padding: 1.5rem !important;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1) !important;
+        margin-bottom: 1rem !important;
+    }
+    
+    /* Dark text in cards */
+    .card * {
+        color: #333 !important;
+    }
+    
+    /* Footer */
+    .footer {
+        background: linear-gradient(90deg, #3a4a8c 0%, #1a2244 100%) !important;
+        color: white !important;
+        padding: 1rem !important;
+        border-radius: 10px !important;
+        margin-top: 2rem !important;
+        text-align: center !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# Sidebar controls with improved contrast
+with st.sidebar:
+    st.markdown("""
+        <div style="text-align: center; margin-bottom: 30px;">
+            <h1 style="color: white; margin-bottom: 0;">⚙️ Control Panel</h1>
+            <p style="color: rgba(255,255,255,0.9);">Adjust parameters for optimal dehazing</p>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    algorithm = st.radio(
+        "**Dehazing Algorithm**",
+        ["Dark Channel Prior 🌟", "Enhanced Dehazer 🚀"],
+        index=0,
+        help="Choose between the basic dark channel prior or enhanced dehazing algorithm"
+    )
+    
+    with st.expander("**Dark Channel Parameters**", expanded=True):
+        omega = st.slider(
+            "Omega (ω)", 
+            min_value=0.1, 
+            max_value=1.0, 
+            value=0.95, 
+            step=0.01,
+            help="Controls the amount of haze to remove"
+        )
+        t0 = st.slider(
+            "Transmission Threshold (t₀)", 
+            min_value=0.01, 
+            max_value=0.5, 
+            value=0.1, 
+            step=0.01,
+            help="Lower bound for transmission to avoid noise"
+        )
+        radius = st.slider(
+            "Dark Channel Radius", 
+            min_value=1, 
+            max_value=30, 
+            value=7,
+            help="Window size for dark channel estimation"
+        )
+    
+    with st.expander("**Guided Filter Parameters**", expanded=True):
+        guided_radius = st.slider(
+            "Guided Filter Radius", 
+            min_value=1, 
+            max_value=100, 
+            value=60,
+            help="Radius for guided filtering"
+        )
+        guided_eps = st.slider(
+            "Guided Filter Epsilon (ε)", 
+            min_value=0.0001, 
+            max_value=0.01, 
+            value=0.001,
+            step=0.0001,
+            format="%.4f",
+            help="Regularization term for guided filtering"
+        )
+    
+    with st.expander("**Post-Processing**", expanded=True):
+        contrast = st.slider(
+            "Contrast Enhancement", 
+            min_value=0.0, 
+            max_value=1.0, 
+            value=0.2,
+            step=0.05,
+            help="Additional contrast adjustment after dehazing"
+        )
+
+# Main content with better contrast
+st.markdown("""
+    <div class="main">
+    <div style="background: linear-gradient(90deg, #3a4a8c 0%, #1a2244 100%); 
+                padding: 2rem; 
+                border-radius: 15px; 
+                color: white;
+                text-align: center;
+                margin-bottom: 2rem;
+                box-shadow: 0 4px 15px rgba(0,0,0,0.1);">
+        <h1 style="color: white; margin-bottom: 0.5rem;">🌈 Advanced Haze Removal System</h1>
+        <p style="opacity: 0.9;">Transform hazy images into crystal clear masterpieces</p>
+    </div>
+    </div>
+""", unsafe_allow_html=True)
+
+# Initialize session state
+if 'original' not in st.session_state:
+    st.session_state.original = None
+if 'processed' not in st.session_state:
+    st.session_state.processed = None
+
+# Input selection with better contrast
+st.markdown("### 📌 Select Input Method")
+option = st.radio(
+    "", 
+    ["Upload Image 📁", "Take Photo 📸", "Live Video 🎥"],
+    horizontal=True,
+    label_visibility="collapsed"
+)
+
+# Processing function (same as before)
+def process_image(img, use_enhanced=False):
+    if use_enhanced:
+        start_time = time.time()
+        dehazed_frame, _ = dehazer.remove_haze(np.array(img))
+        processing_time = time.time() - start_time
+        return Image.fromarray(dehazed_frame), processing_time
+    else:
+        hr = HazeRemoval(omega=omega, t0=t0, radius=radius, r=guided_radius, eps=guided_eps)
+        frame = np.array(img)
+        
+        start_time = time.time()
+        hr.open_image(frame)
+        hr.get_dark_channel()
+        hr.get_air_light()
+        hr.get_transmission()
+        hr.guided_filter()
+        hr.recover()
+        result = hr.show()
+        processing_time = time.time() - start_time
+        
+        if contrast > 0:
+            result = cv2.convertScaleAbs(result, alpha=1+contrast, beta=0)
+        
+        return Image.fromarray(result), processing_time
+
+# --- Upload Image ---
+if option == "Upload Image 📁":
+    st.markdown("### 📤 Upload Your Hazy Image")
+    uploaded_file = st.file_uploader(
+        "Drag and drop or click to browse", 
+        type=["jpg", "jpeg", "png"],
+        help="Supported formats: JPG, JPEG, PNG",
+        label_visibility="collapsed"
+    )
+    
+    if uploaded_file:
+        image = Image.open(uploaded_file)
+        st.session_state.original = image
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("#### Original Image")
+            st.image(image, use_column_width=True, caption="Before processing")
+        
+        if st.button("✨ Remove Haze", key="process_upload"):
+            with st.spinner('Enhancing your image...'):
+                progress_bar = st.progress(0)
+                for percent_complete in range(100):
+                    time.sleep(0.02)
+                    progress_bar.progress(percent_complete + 1)
+                
+                result, proc_time = process_image(image, "Enhanced Dehazer 🚀" in algorithm)
+                progress_bar.empty()
+                
+                st.session_state.processed = result
+                st.success(f"✅ Processing completed in {proc_time:.2f} seconds")
+            
+            with col2:
+                st.markdown("#### Enhanced Image")
+                st.image(result, use_column_width=True, caption="After processing")
+            
+            if st.session_state.processed:
+                st.markdown("---")
+                col_dl, col_comp = st.columns([1, 2])
+                
+                with col_dl:
+                    st.download_button(
+                        label="💾 Download Result",
+                        data=cv2.imencode('.jpg', np.array(result))[1].tobytes(),
+                        file_name="dehazed.jpg",
+                        mime="image/jpeg",
+                        use_container_width=True
+                    )
+                
+                with col_comp:
+                    st.markdown("#### Before & After Comparison")
+                    comparison = st.slider(
+                        "Slide to compare", 
+                        0.0, 1.0, 0.5,
+                        format="",
+                        help="Drag left to see original, right to see processed",
+                        label_visibility="collapsed"
+                    )
+                    
+                    blended = Image.blend(
+                        st.session_state.original, 
+                        st.session_state.processed, 
+                        comparison
+                    )
+                    st.image(blended, caption=f"Blended View ({int(comparison*100)}% processed)")
+
+# --- Take Photo ---
+elif option == "Take Photo 📸":
+    st.markdown("""
+        <div class="card">
+            <h3 style="margin-top: 0;">📸 Camera Capture</h3>
+            <p>Position your subject and click the button below to capture and process</p>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    camera_input = st.camera_input("", label_visibility="collapsed")
+    
+    if camera_input:
+        image = Image.open(camera_input)
+        st.session_state.original = image
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("#### Captured Image")
+            st.image(image, use_column_width=True, caption="Before processing")
+        
+        if st.button("✨ Remove Haze", key="process_photo"):
+            with st.spinner('Enhancing your photo...'):
+                progress_bar = st.progress(0)
+                result, proc_time = process_image(image, "Enhanced Dehazer 🚀" in algorithm)
+                progress_bar.progress(100)
+                
+                st.session_state.processed = result
+                st.success(f"✅ Processing completed in {proc_time:.2f} seconds")
+            
+            with col2:
+                st.markdown("#### Enhanced Image")
+                st.image(result, use_column_width=True, caption="After processing")
+
+# --- Live Video ---
+elif option == "Live Video 🎥":
+    st.markdown("""
+        <div class="card">
+            <h3 style="margin-top: 0;">🎥 Live Dehazing</h3>
+            <p>Real-time haze removal from your webcam feed (computationally intensive)</p>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    run = st.checkbox("🚀 Start Live Processing", value=False)
+    show_original = st.checkbox("👀 Show Original Feed", value=False)
+    
+    FRAME_WINDOW = st.empty()
+    STATUS_WINDOW = st.empty()
+    
+    if run:
+        cap = cv2.VideoCapture(0)
+        STATUS_WINDOW.info("🔍 Processing live feed... Press 'Stop Webcam' to exit")
+        
+        while run:
+            ret, frame = cap.read()
+            if not ret:
+                st.error("❌ Couldn't access camera. Please check permissions.")
+                break
+            
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
+            if show_original:
+                FRAME_WINDOW.image(frame, caption="Original Feed", channels="RGB")
+            else:
+                try:
+                    if "Enhanced Dehazer 🚀" in algorithm:
+                        result, _ = dehazer.remove_haze(frame)
+                    else:
+                        hr = HazeRemoval(omega=omega, t0=t0, radius=radius, r=guided_radius, eps=guided_eps)
+                        hr.open_image(frame)
+                        hr.get_dark_channel()
+                        hr.get_air_light()
+                        hr.get_transmission()
+                        hr.guided_filter()
+                        hr.recover()
+                        result = hr.show()
+                    
+                    if contrast > 0:
+                        result = cv2.convertScaleAbs(result, alpha=1+contrast, beta=0)
+                    
+                    FRAME_WINDOW.image(result, caption="Dehazed Feed", channels="RGB")
+                except Exception as e:
+                    FRAME_WINDOW.image(frame, caption="Original (Processing Error)", channels="RGB")
+                    st.error(f"⚠️ Error: {str(e)}")
+            
+            if not run:
+                break
+        
+        cap.release()
+        cv2.destroyAllWindows()
+
+# App information with better contrast
+st.markdown("---")
+st.markdown("## ℹ️ About This Application")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    st.markdown("""
+        <div class="card">
+            <h3 style="margin-top: 0;">🔍 Technologies Used</h3>
+            <p>This tool implements two advanced haze removal techniques:</p>
+            <ul>
+                <li><b>Dark Channel Prior</b>: Based on the observation that most local patches in haze-free images contain some pixels with very low intensities in at least one color channel.</li>
+                <li><b>Enhanced Dehazing</b>: Uses more sophisticated atmospheric light estimation and transmission refinement.</li>
+            </ul>
+        </div>
+    """, unsafe_allow_html=True)
+
+with col2:
+    st.markdown("""
+        <div class="card">
+            <h3 style="margin-top: 0;">🎚️ Parameter Guide</h3>
+            <p>Adjust parameters in the sidebar to fine-tune results:</p>
+            <ul>
+                <li><b>Omega (ω)</b>: Higher values remove more haze but may oversaturate</li>
+                <li><b>Transmission Threshold</b>: Prevents noise in very hazy regions</li>
+                <li><b>Contrast</b>: Adds final pop to your processed images</li>
+            </ul>
+        </div>
+    """, unsafe_allow_html=True)
+
+# Footer
+st.markdown("""
+    <div class="footer">
+        <h3 style="color: white; margin-bottom: 0;">✨ Advanced Haze Removal System</h3>
+        <p style="margin-bottom: 0; opacity: 0.8;">© 2025 | Computer Vision Project</p>
+    </div>
+""", unsafe_allow_html=True)
+
+
+#haze Removal
+import PIL.Image as Image
+import numpy as np
+import time
+from gf import guided_filter
+import cv2
+import cv2
+import numpy as np
+
+# Import the image_dehazer class from your existing code
+from  dehazer import image_dehazer
+
+# Initialize the dehazer
+dehazer = image_dehazer(airlightEstimation_windowSze=15, boundaryConstraint_windowSze=3, C0=20, C1=300,
+                        regularize_lambda=0.1, sigma=0.5, delta=0.85, showHazeTransmissionMap=False)
+
+
+class HazeRemoval(object):
+    def __init__(self, omega=0.95, t0=0.1, radius=7, r=20, eps=0.001):
+        pass
+
+    def open_image(self, img):
+        if isinstance(img, str):
+            img = cv2.imread(img)  # Read image from path if it's a string
+
+        if img is None:
+            raise ValueError("Image loading failed. Check the file path.")
+
+        self.src = img.astype(np.double) / 255.  # Convert the frame to float and normalize
+        self.rows, self.cols, _ = self.src.shape
+        self.dark = np.zeros((self.rows, self.cols), dtype=np.double)
+        self.Alight = np.zeros((3), dtype=np.double)
+        self.tran = np.zeros((self.rows, self.cols), dtype=np.double)
+        self.dst = np.zeros_like(self.src, dtype=np.double)
+
+        
+
+    def get_dark_channel(self, radius=7):
+        print("Starting to compute dark channel prior...")
+        start = time.time()
+        tmp = self.src.min(axis=2)
+        for i in range(self.rows):
+            for j in range(self.cols):
+                rmin = max(0,i-radius)
+                rmax = min(i+radius,self.rows-1)
+                cmin = max(0,j-radius)
+                cmax = min(j+radius,self.cols-1)
+                self.dark[i,j] = tmp[rmin:rmax+1,cmin:cmax+1].min()
+        print("time:",time.time()-start)
+
+    def get_air_light(self):
+        print("Starting to compute air light prior...")
+        start = time.time()
+        flat = self.dark.flatten()
+        flat.sort()
+        num = int(self.rows*self.cols*0.001)
+        threshold = flat[-num]
+        tmp = self.src[self.dark>=threshold]
+        tmp.sort(axis=0)
+        self.Alight = tmp[-num:,:].mean(axis=0)
+        # print(self.Alight)
+        print("time:",time.time()-start)
+
+    def get_transmission(self, radius=7, omega=0.95):
+        print("Starting to compute transmission...")
+        start = time.time()
+        for i in range(self.rows):
+            for j in range(self.cols):
+                rmin = max(0,i-radius)
+                rmax = min(i+radius,self.rows-1)
+                cmin = max(0,j-radius)
+                cmax = min(j+radius,self.cols-1)
+                pixel = (self.src[rmin:rmax+1,cmin:cmax+1]/self.Alight).min()
+                self.tran[i,j] = 1. - omega * pixel
+        print("time:",time.time()-start)
+
+    def guided_filter(self, r=60, eps=0.001):
+        print("Starting to compute guided filter trainsmission...")
+        start = time.time()
+        self.gtran = guided_filter(self.src, self.tran, r, eps)
+        print("time:",time.time()-start)
+
+    def recover(self, t0=0.1):
+        print("Starting recovering...")
+        start = time.time()
+        self.gtran[self.gtran<t0] = t0
+        t = self.gtran.reshape(*self.gtran.shape,1).repeat(3,axis=2)
+        # import ipdb; ipdb.set_trace()
+        self.dst = (self.src.astype(np.double) - self.Alight)/t + self.Alight
+        self.dst *= 255
+        self.dst[self.dst>255] = 255
+        self.dst[self.dst<0] = 0
+        self.dst = self.dst.astype(np.uint8)
+        print("time:",time.time()-start)
+    def show(self):
+        cv2.imwrite("img/src.jpg", (self.src*255).astype(np.uint8)[:,:,(2,1,0)])
+        cv2.imwrite("img/dark.jpg", (self.dark*255).astype(np.uint8))
+        cv2.imwrite("img/tran.jpg", (self.tran*255).astype(np.uint8))
+        cv2.imwrite("img/gtran.jpg", (self.gtran*255).astype(np.uint8))
+        cv2.imwrite("img/dst.jpg", self.dst[:,:,(2,1,0)])
+
+        Image.fromarray(self.dst).save("test.jpg")
+
+
+        return self.dst  # Add this line to return the dehazed frame
+
+
+
+def capture_video(hr):
+    cap = cv2.VideoCapture(0)
+
+#cap = cv2.VideoCapture(1)
+    while True:
+        # Read a frame from the webcam
+        ret, frame = cap.read()
+
+        if not ret:
+            break
+
+        # Apply the dehazing model to the frame
+        dehazed_frame, _ = dehazer.remove_haze(frame)
+
+        # Display the dehazed frame
+        cv2.imshow('Dehazed Video', dehazed_frame)
+        
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    # Release the webcam and close all OpenCV windows
+    cap.release()
+    cv2.destroyAllWindows()
+    
+
+
+if __name__ == '__main__':
+    import sys
+    hr = HazeRemoval()
+    print("What is the operation ya want to do?: ")
+    choice = int(input("1. Static photo\n2. Real time photo\n3. Video\n"))
+    if choice ==2 :
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            print("Error: Could not open camera.")
+            exit()
+        ret, frame = cap.read()
+        if ret:
+            cv2.imwrite("captured_photo.jpg", frame)
+            print("Photo captured and saved as 'captured_photo.jpg'")
+        else:
+            print("Error: Could not capture image.")
+        cap.release()
+        cv2.destroyAllWindows()
+        hr.open_image('captured_photo.jpg')
+        hr.get_dark_channel()
+        hr.get_air_light()
+        hr.get_transmission()
+        hr.guided_filter()
+        hr.recover()
+        hr.show()
+    elif choice ==1:
+        img_path = input("Enter the image path: ")
+        hr.open_image(img_path)
+        hr.get_dark_channel()
+        hr.get_air_light()
+        hr.get_transmission()
+        hr.guided_filter()
+        hr.recover()
+        hr.show()
+    elif choice ==3:
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            print("Error: Could not open camera.")
+            exit()
+        while True:
+           capture_video(hr)
+    
+#Dehazer
+import cv2
+import numpy as np
+import copy
+
+
+class image_dehazer():
+    def __init__(self, airlightEstimation_windowSze=15, boundaryConstraint_windowSze=3, C0=20, C1=300,
+                 regularize_lambda=0.1, sigma=0.5, delta=0.85, showHazeTransmissionMap=True):
+        self.airlightEstimation_windowSze = airlightEstimation_windowSze
+        self.boundaryConstraint_windowSze = boundaryConstraint_windowSze
+        self.C0 = C0
+        self.C1 = C1
+        self.regularize_lambda = regularize_lambda
+        self.sigma = sigma
+        self.delta = delta
+        self.showHazeTransmissionMap = showHazeTransmissionMap
+        self._A = []
+        self._transmission = []
+        self._WFun = []
+
+    def __AirlightEstimation(self, HazeImg):
+        if (len(HazeImg.shape) == 3):
+            for ch in range(len(HazeImg.shape)):
+                kernel = np.ones((self.airlightEstimation_windowSze, self.airlightEstimation_windowSze), np.uint8)
+                minImg = cv2.erode(HazeImg[:, :, ch], kernel)
+                self._A.append(int(minImg.max()))
+        else:
+            kernel = np.ones((self.airlightEstimation_windowSze, self.airlightEstimation_windowSze), np.uint8)
+            minImg = cv2.erode(HazeImg, kernel)
+            self._A.append(int(minImg.max()))
+
+    def __BoundCon(self, HazeImg):
+        if (len(HazeImg.shape) == 3):
+
+            t_b = np.maximum((self._A[0] - HazeImg[:, :, 0].astype(float)) / (self._A[0] - self.C0),
+                             (HazeImg[:, :, 0].astype(float) - self._A[0]) / (self.C1 - self._A[0]))
+            t_g = np.maximum((self._A[1] - HazeImg[:, :, 1].astype(float)) / (self._A[1] - self.C0),
+                             (HazeImg[:, :, 1].astype(float) - self._A[1]) / (self.C1 - self._A[1]))
+            t_r = np.maximum((self._A[2] - HazeImg[:, :, 2].astype(float)) / (self._A[2] - self.C0),
+                             (HazeImg[:, :, 2].astype(float) - self._A[2]) / (self.C1 - self._A[2]))
+
+            MaxVal = np.maximum(t_b, t_g, t_r)
+            self._Transmission = np.minimum(MaxVal, 1)
+        else:
+            self._Transmission = np.maximum((self._A[0] - HazeImg.astype(float)) / (self._A[0] - self.C0),
+                                            (HazeImg.astype(float) - self._A[0]) / (self.C1 - self._A[0]))
+            self._Transmission = np.minimum(self._Transmission, 1)
+
+        kernel = np.ones((self.boundaryConstraint_windowSze, self.boundaryConstraint_windowSze), float)
+        self._Transmission = cv2.morphologyEx(self._Transmission, cv2.MORPH_CLOSE, kernel=kernel)
+
+    def __LoadFilterBank(self):
+        KirschFilters = []
+        KirschFilters.append(np.array([[-3, -3, -3], [-3, 0, 5], [-3, 5, 5]]))
+        KirschFilters.append(np.array([[-3, -3, -3], [-3, 0, -3], [5, 5, 5]]))
+        KirschFilters.append(np.array([[-3, -3, -3], [5, 0, -3], [5, 5, -3]]))
+        KirschFilters.append(np.array([[5, -3, -3], [5, 0, -3], [5, -3, -3]]))
+        KirschFilters.append(np.array([[5, 5, -3], [5, 0, -3], [-3, -3, -3]]))
+        KirschFilters.append(np.array([[5, 5, 5], [-3, 0, -3], [-3, -3, -3]]))
+        KirschFilters.append(np.array([[-3, 5, 5], [-3, 0, 5], [-3, -3, -3]]))
+        KirschFilters.append(np.array([[-3, -3, 5], [-3, 0, 5], [-3, -3, 5]]))
+        KirschFilters.append(np.array([[-1, -1, -1], [-1, 8, -1], [-1, -1, -1]]))
+        return (KirschFilters)
+
+    def __CalculateWeightingFunction(self, HazeImg, Filter):
+
+        # Computing the weight function... Eq (17) in the paper
+
+        HazeImageDouble = HazeImg.astype(float) / 255.0
+        if (len(HazeImg.shape) == 3):
+            Red = HazeImageDouble[:, :, 2]
+            d_r = self.__circularConvFilt(Red, Filter)
+
+            Green = HazeImageDouble[:, :, 1]
+            d_g = self.__circularConvFilt(Green, Filter)
+
+            Blue = HazeImageDouble[:, :, 0]
+            d_b = self.__circularConvFilt(Blue, Filter)
+
+            return (np.exp(-((d_r ** 2) + (d_g ** 2) + (d_b ** 2)) / (2 * self.sigma * self.sigma)))
+        else:
+            d = self.__circularConvFilt(HazeImageDouble, Filter)
+            return (np.exp(-((d ** 2) + (d ** 2) + (d ** 2)) / (2 * self.sigma * self.sigma)))
+
+    def __circularConvFilt(self, Img, Filter):
+        FilterHeight, FilterWidth = Filter.shape
+        assert (FilterHeight == FilterWidth), 'Filter must be square in shape --> Height must be same as width'
+        assert (FilterHeight % 2 == 1), 'Filter dimension must be a odd number.'
+
+        filterHalsSize = int((FilterHeight - 1) / 2)
+        rows, cols = Img.shape
+        PaddedImg = cv2.copyMakeBorder(Img, filterHalsSize, filterHalsSize, filterHalsSize, filterHalsSize,
+                                       borderType=cv2.BORDER_WRAP)
+        FilteredImg = cv2.filter2D(PaddedImg, -1, Filter)
+        Result = FilteredImg[filterHalsSize:rows + filterHalsSize, filterHalsSize:cols + filterHalsSize]
+        return (Result)
+
+    def __CalTransmission(self, HazeImg):
+        rows, cols = self._Transmission.shape
+
+        KirschFilters = self.__LoadFilterBank()
+
+        # Normalize the filters
+        for idx, currentFilter in enumerate(KirschFilters):
+            KirschFilters[idx] = KirschFilters[idx] / np.linalg.norm(currentFilter)
+
+        # Calculate Weighting function --> [rows, cols. numFilters] --> One Weighting function for every filter
+        WFun = []
+        for idx, currentFilter in enumerate(KirschFilters):
+            WFun.append(self.__CalculateWeightingFunction(HazeImg, currentFilter))
+
+        # Precompute the constants that are later needed in the optimization step
+        tF = np.fft.fft2(self._Transmission)
+        DS = 0
+
+        for i in range(len(KirschFilters)):
+            D = self.__psf2otf(KirschFilters[i], (rows, cols))
+            # D = psf2otf(KirschFilters[i], (rows, cols))
+            DS = DS + (abs(D) ** 2)
+
+        # Cyclic loop for refining t and u --> Section III in the paper
+        beta = 1  # Start Beta value --> selected from the paper
+        beta_max = 2 ** 4  # Selected from the paper --> Section III --> "Scene Transmission Estimation"
+        beta_rate = 2 * np.sqrt(2)  # Selected from the paper
+
+        while (beta < beta_max):
+            gamma = self.regularize_lambda / beta
+
+            # Fixing t first and solving for u
+            DU = 0
+            for i in range(len(KirschFilters)):
+                dt = self.__circularConvFilt(self._Transmission, KirschFilters[i])
+                u = np.maximum((abs(dt) - (WFun[i] / (len(KirschFilters) * beta))), 0) * np.sign(dt)
+                DU = DU + np.fft.fft2(self.__circularConvFilt(u, cv2.flip(KirschFilters[i], -1)))
+
+            # Fixing u and solving t --> Equation 26 in the paper
+            # Note: In equation 26, the Numerator is the "DU" calculated in the above part of the code
+            # In the equation 26, the Denominator is the DS which was computed as a constant in the above code
+
+            self._Transmission = np.abs(np.fft.ifft2((gamma * tF + DU) / (gamma + DS)))
+            beta = beta * beta_rate
+
+        if (self.showHazeTransmissionMap):
+            cv2.imshow("Haze Transmission Map", self._Transmission)
+            cv2.waitKey(1)
+
+    def __removeHaze(self, HazeImg):
+        '''
+        :param HazeImg: Hazy input image
+        :param Transmission: estimated transmission
+        :param A: estimated airlight
+        :param delta: fineTuning parameter for dehazing --> default = 0.85
+        :return: result --> Dehazed image
+        '''
+
+        # This function will implement equation(3) in the paper
+        # " https://www.cv-foundation.org/openaccess/content_iccv_2013/papers/Meng_Efficient_Image_Dehazing_2013_ICCV_paper.pdf "
+
+        epsilon = 0.0001
+        Transmission = pow(np.maximum(abs(self._Transmission), epsilon), self.delta)
+
+        HazeCorrectedImage = copy.deepcopy(HazeImg)
+        if (len(HazeImg.shape) == 3):
+            for ch in range(len(HazeImg.shape)):
+                temp = ((HazeImg[:, :, ch].astype(float) - self._A[ch]) / Transmission) + self._A[ch]
+                temp = np.maximum(np.minimum(temp, 255), 0)
+                HazeCorrectedImage[:, :, ch] = temp
+        else:
+            temp = ((HazeImg.astype(float) - self._A[0]) / Transmission) + self._A[0]
+            temp = np.maximum(np.minimum(temp, 255), 0)
+            HazeCorrectedImage = temp
+        return (HazeCorrectedImage)
+
+    def __psf2otf(self, psf, shape):
+        '''
+            this code is taken from:
+            https://pypi.org/project/pypher/
+        '''
+        """
+        Convert point-spread function to optical transfer function.
+
+        Compute the Fast Fourier Transform (FFT) of the point-spread
+        function (PSF) array and creates the optical transfer function (OTF)
+        array that is not influenced by the PSF off-centering.
+        By default, the OTF array is the same size as the PSF array.
+
+        To ensure that the OTF is not altered due to PSF off-centering, PSF2OTF
+        post-pads the PSF array (down or to the right) with zeros to match
+        dimensions specified in OUTSIZE, then circularly shifts the values of
+        the PSF array up (or to the left) until the central pixel reaches (1,1)
+        position.
+
+        Parameters
+        ----------
+        psf : `numpy.ndarray`
+            PSF array
+        shape : int
+            Output shape of the OTF array
+
+        Returns
+        -------
+        otf : `numpy.ndarray`
+            OTF array
+
+        Notes
+        -----
+        Adapted from MATLAB psf2otf function
+
+        """
+        if np.all(psf == 0):
+            return np.zeros_like(psf)
+
+        inshape = psf.shape
+        # Pad the PSF to outsize
+        psf = self.__zero_pad(psf, shape, position='corner')
+
+        # Circularly shift OTF so that the 'center' of the PSF is
+        # [0,0] element of the array
+        for axis, axis_size in enumerate(inshape):
+            psf = np.roll(psf, -int(axis_size / 2), axis=axis)
+
+        # Compute the OTF
+        otf = np.fft.fft2(psf)
+
+        # Estimate the rough number of operations involved in the FFT
+        # and discard the PSF imaginary part if within roundoff error
+        # roundoff error  = machine epsilon = sys.float_info.epsilon
+        # or np.finfo().eps
+        n_ops = np.sum(psf.size * np.log2(psf.shape))
+        otf = np.real_if_close(otf, tol=n_ops)
+
+        return otf
+
+    def __zero_pad(self, image, shape, position='corner'):
+        """
+        Extends image to a certain size with zeros
+
+        Parameters
+        ----------
+        image: real 2d `numpy.ndarray`
+            Input image
+        shape: tuple of int
+            Desired output shape of the image
+        position : str, optional
+            The position of the input image in the output one:
+                * 'corner'
+                    top-left corner (default)
+                * 'center'
+                    centered
+
+        Returns
+        -------
+        padded_img: real `numpy.ndarray`
+            The zero-padded image
+
+        """
+        shape = np.asarray(shape, dtype=int)
+        imshape = np.asarray(image.shape, dtype=int)
+
+        if np.all(imshape == shape):
+            return image
+
+        if np.any(shape <= 0):
+            raise ValueError("ZERO_PAD: null or negative shape given")
+
+        dshape = shape - imshape
+        if np.any(dshape < 0):
+            raise ValueError("ZERO_PAD: target size smaller than source one")
+
+        pad_img = np.zeros(shape, dtype=image.dtype)
+
+        idx, idy = np.indices(imshape)
+
+        if position == 'center':
+            if np.any(dshape % 2 != 0):
+                raise ValueError("ZERO_PAD: source and target shapes "
+                                 "have different parity.")
+            offx, offy = dshape // 2
+        else:
+            offx, offy = (0, 0)
+
+        pad_img[idx + offx, idy + offy] = image
+
+        return pad_img
+
+    def remove_haze(self, HazeImg):
+        self.__AirlightEstimation(HazeImg)
+        self.__BoundCon(HazeImg)
+        self.__CalTransmission(HazeImg)
+        haze_corrected_img = self.__removeHaze(HazeImg)
+        HazeTransmissionMap = self._Transmission
+        return (haze_corrected_img, HazeTransmissionMap)
+
+
+def remove_haze(HazeImg, airlightEstimation_windowSze=15, boundaryConstraint_windowSze=3, C0=20, C1=300,
+                regularize_lambda=0.1, sigma=0.5, delta=0.85, showHazeTransmissionMap=True):
+    Dehazer = image_dehazer(airlightEstimation_windowSze=airlightEstimation_windowSze,
+                            boundaryConstraint_windowSze=boundaryConstraint_windowSze, C0=C0, C1=C1,
+                            regularize_lambda=regularize_lambda, sigma=sigma, delta=delta,
+                            showHazeTransmissionMap=showHazeTransmissionMap)
+    HazeCorrectedImg, HazeTransmissionMap = Dehazer.remove_haze(HazeImg)
+    return (HazeCorrectedImg, HazeTransmissionMap)
+    
